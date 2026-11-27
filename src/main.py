@@ -94,14 +94,32 @@ def montar_ipp_get_jobs(which_jobs: str = "completed") -> bytes:
     )
 
 
-def parse_ipp_jobs(data: bytes) -> tuple[int, list[dict]]:
+def montar_ipp_get_printer_attributes() -> bytes:
+    def attr(tag: int, nome: str, valor: str) -> bytes:
+        n, v = nome.encode("utf-8"), valor.encode("utf-8")
+        return struct.pack(">BH", tag, len(n)) + n + struct.pack(">H", len(v)) + v
+
+    return (
+        b"\x01\x01"
+        b"\x00\x0b"
+        b"\x00\x00\x00\x02"
+        b"\x01"
+        + attr(0x47, "attributes-charset", "utf-8")
+        + attr(0x48, "attributes-natural-language", "en")
+        + attr(0x45, "printer-uri", IPP_PRINTER_URI)
+        + attr(0x44, "requested-attributes", "all")
+        + b"\x03"
+    )
+
+
+def parse_ipp_grupos(data: bytes, target_tag: int = 0x02) -> tuple[int, list[dict]]:
     if len(data) < 8:
         return -1, []
 
     status_code = struct.unpack_from(">H", data, 2)[0]
     pos = 8
-    jobs = []
-    current_job = None
+    grupos = []
+    current_group = None
     last_name = None
     collection_depth = 0
 
@@ -113,11 +131,11 @@ def parse_ipp_jobs(data: bytes) -> tuple[int, list[dict]]:
             break
 
         if tag < 0x10:
-            if tag == 0x02:
-                current_job = {}
-                jobs.append(current_job)
+            if tag == target_tag:
+                current_group = {}
+                grupos.append(current_group)
             else:
-                current_job = None
+                current_group = None
             last_name = None
             collection_depth = 0
             continue
@@ -146,7 +164,7 @@ def parse_ipp_jobs(data: bytes) -> tuple[int, list[dict]]:
             collection_depth = max(0, collection_depth - 1)
             continue
 
-        if current_job is None or collection_depth > 0 or not last_name:
+        if current_group is None or collection_depth > 0 or not last_name:
             continue
 
         if tag in (0x21, 0x23) and val_len == 4:
@@ -166,16 +184,21 @@ def parse_ipp_jobs(data: bytes) -> tuple[int, list[dict]]:
         else:
             continue
 
-        if last_name not in current_job:
-            current_job[last_name] = val
+        if last_name not in current_group:
+            current_group[last_name] = val
 
-    return status_code, jobs
+    return status_code, grupos
 
 
 def normalizar_job(raw: dict) -> dict:
-    paginas = (
+    folhas = (
         raw.get("job-media-sheets-completed")
         or raw.get("job-impressions-completed")
+        or 0
+    )
+    impressoes = (
+        raw.get("job-impressions-completed")
+        or raw.get("job-media-sheets-completed")
         or 0
     )
     tamanho_kb = raw.get("job-k-octets-processed") or raw.get("job-k-octets") or 0
@@ -186,8 +209,10 @@ def normalizar_job(raw: dict) -> dict:
         "documento": str(raw.get("job-name", "")),
         "usuario": str(raw.get("job-originating-user-name", "")),
         "status": JOB_STATES.get(state_code, str(state_code or "")),
-        "paginas_impressas": para_int(paginas),
+        "paginas_impressas": para_int(folhas),
+        "impressoes_totais": para_int(impressoes),
         "tamanho_kb": para_int(tamanho_kb),
+        "tempo_conclusao": para_int(raw.get("time-at-completed", 0)),
     }
 
 
@@ -197,6 +222,7 @@ def assinatura_job(job: dict) -> tuple:
         job.get("documento", ""),
         job.get("usuario", ""),
         job.get("paginas_impressas", 0),
+        job.get("tempo_conclusao", 0),
     )
 
 
@@ -233,39 +259,108 @@ async def consultar_ipp(
     response = await client.post(
         IPP_HTTP_URL,
         content=payload,
-        headers={"Content-Type": "application/ipp"},
+        headers={
+            "Content-Type": "application/ipp",
+            "Connection": "close",
+        },
     )
     response.raise_for_status()
-    status_code, raw_jobs = parse_ipp_jobs(response.content)
+    status_code, raw_jobs = parse_ipp_grupos(response.content, target_tag=0x02)
     return status_code, [normalizar_job(j) for j in raw_jobs]
+
+
+async def consultar_contador_paginas(client: httpx.AsyncClient) -> tuple[int, dict]:
+    payload = montar_ipp_get_printer_attributes()
+    response = await client.post(
+        IPP_HTTP_URL,
+        content=payload,
+        headers={
+            "Content-Type": "application/ipp",
+            "Connection": "close",
+        },
+    )
+    response.raise_for_status()
+    _, grupos = parse_ipp_grupos(response.content, target_tag=0x04)
+    attrs = grupos[0] if grupos else {}
+    total = para_int(
+        attrs.get("printer-impressions-completed")
+        or attrs.get("printer-media-sheets-completed")
+        or 0
+    )
+    return total, attrs
 
 
 async def coletor_impressoes():
     impressora_online: bool | None = None
+    ultimo_contador_paginas: int | None = None
 
     async with httpx.AsyncClient(timeout=5.0, verify=IPP_VERIFICAR_SSL) as client:
         while True:
             try:
                 _, jobs = await consultar_ipp(client, which_jobs="completed")
+                total_paginas_motor, _ = await consultar_contador_paginas(client)
+
                 if impressora_online is False:
                     print("[OK] Conexão com a impressora restabelecida.")
                 impressora_online = True
 
                 recentes = {
                     assinatura_job(item)
-                    for item in list(historico)[-20:]
+                    for item in list(historico)[-30:]
                     if isinstance(item, dict)
                 }
                 mudou = False
+                impressoes_novos_ipp = 0
 
-                for job in jobs:
+                jobs_ordenados = sorted(
+                    jobs,
+                    key=lambda j: (
+                        j.get("tempo_conclusao", 0),
+                        para_int(j.get("id_trabalho")),
+                    ),
+                )
+
+                for job in jobs_ordenados:
                     if not job["id_trabalho"]:
                         continue
                     if assinatura_job(job) not in recentes:
                         job["registrado_em"] = datetime.now().isoformat(timespec="seconds")
                         historico.append(job)
                         recentes.add(assinatura_job(job))
+                        impressoes_novos_ipp += job.get("impressoes_totais", 0)
                         mudou = True
+                        print(
+                            f"[NOVO IPP] #{job['id_trabalho']} | {job['documento']} "
+                            f"({job['paginas_impressas']} fls)"
+                        )
+
+                if total_paginas_motor > 0:
+                    if ultimo_contador_paginas is None:
+                        ultimo_contador_paginas = total_paginas_motor
+                    elif total_paginas_motor > ultimo_contador_paginas:
+                        delta = total_paginas_motor - ultimo_contador_paginas
+                        sobra = delta - impressoes_novos_ipp
+
+                        if sobra > 0:
+                            _, fila_ativa = await consultar_ipp(client, which_jobs="not-completed")
+                            if len(fila_ativa) == 0:
+                                registro_raw = {
+                                    "id_trabalho": f"raw-{total_paginas_motor}",
+                                    "documento": "Impressão via Porta TCP/9100 (sem metadados IPP)",
+                                    "usuario": "Estação (RAW / IP:Porta)",
+                                    "status": "completed",
+                                    "paginas_impressas": sobra,
+                                    "impressoes_totais": sobra,
+                                    "tamanho_kb": 0,
+                                    "tempo_conclusao": 0,
+                                    "registrado_em": datetime.now().isoformat(timespec="seconds"),
+                                }
+                                historico.append(registro_raw)
+                                mudou = True
+                                ultimo_contador_paginas = total_paginas_motor
+                                print(f"[NOVO RAW] Impressão não-IPP detectada ({sobra} pág.)")
+                        else:
+                            ultimo_contador_paginas = total_paginas_motor
 
                 if mudou:
                     salvar_arquivo()
@@ -353,19 +448,19 @@ if DEBUG_MODE:
     async def debug_ipp():
         try:
             async with httpx.AsyncClient(timeout=5.0, verify=IPP_VERIFICAR_SSL) as client:
-                payload = montar_ipp_get_jobs("completed")
-                r = await client.post(
-                    IPP_HTTP_URL,
-                    content=payload,
-                    headers={"Content-Type": "application/ipp"},
-                )
-                status_ipp, raw_jobs = parse_ipp_jobs(r.content)
+                status_ipp, jobs = await consultar_ipp(client, which_jobs="completed")
+                contador_paginas, attrs_impressora = await consultar_contador_paginas(client)
             return {
                 "online": True,
-                "http_status": r.status_code,
                 "ipp_status": hex(status_ipp),
-                "quantidade": len(raw_jobs),
-                "amostra_bruta": raw_jobs[:5],
+                "contador_paginas_motor": contador_paginas,
+                "quantidade_jobs_ipp": len(jobs),
+                "jobs_ipp": jobs[:5],
+                "atributos_contador": {
+                    k: v
+                    for k, v in attrs_impressora.items()
+                    if any(t in k for t in ("impression", "sheet", "page", "count", "state"))
+                },
             }
         except httpx.HTTPError as e:
             return {
