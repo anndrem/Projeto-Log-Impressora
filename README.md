@@ -45,7 +45,6 @@ projetoImpressora/
 ├── src/
 │   ├── logs/                # Diretório onde o histórico local é gravado (ignorado pelo Git)
 │   ├── .env                 # Configurações locais da impressora (ignorado pelo Git)
-│   ├── .env.example         # Modelo de variáveis de ambiente para configuração
 │   ├── .gitignore           # Regras de exclusão de arquivos sensíveis e temporários
 │   ├── index.html           # Interface web do monitor
 │   └── main.py              # API FastAPI e coletor assíncrono IPP
