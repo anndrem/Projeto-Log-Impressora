@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Monitor de Impressões</title>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --green-bg: #dcfce7;
+      --green-text: #166534;
+      --amber-bg: #fef3c7;
+      --amber-text: #92400e;
+      --red-bg: #fee2e2;
+      --red-text: #991b1b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+
+    .container { max-width: 1100px; margin: 0 auto; }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 700; }
+
+    .subtitle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .status-online { background: var(--green-bg); color: var(--green-text); }
+    .status-offline { background: var(--red-bg); color: var(--red-text); }
+
+    .actions { display: flex; align-items: center; gap: 10px; }
+
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    button:hover { background: var(--primary-hover); }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .stat-label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .stat-value { font-size: 1.5rem; font-weight: 700; margin-top: 4px; }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    input[type="text"], select {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.875rem;
+      color: var(--text);
+    }
+
+    input[type="text"] { flex: 1; min-width: 220px; }
+
+    .table-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+
+    th, td {
+      text-align: left;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      background: #f9fafb;
+      font-weight: 600;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .badge-ok { background: var(--green-bg); color: var(--green-text); }
+    .badge-active { background: var(--amber-bg); color: var(--amber-text); }
+
+    .empty { text-align: center; padding: 36px; color: var(--muted); }
+
+    .doc-name {
+      max-width: 340px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Histórico de Impressões</h1>
+        <div class="subtitle" id="info-impressora">Conectando à API...</div>
+      </div>
+      <div class="actions">
+        <label class="toggle-label">
+          <input type="checkbox" id="auto-refresh" checked />
+          Atualizar a cada 5s
+        </label>
+        <button onclick="carregarDados()">Atualizar agora</button>
+      </div>
+    </header>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Registros Exibidos</div>
+        <div class="stat-value" id="stat-total">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Páginas (na lista)</div>
+        <div class="stat-value" id="stat-paginas">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Imprimindo Agora</div>
+        <div class="stat-value" id="stat-fila">0</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="filtro" placeholder="Filtrar por documento ou usuário..." oninput="renderizarTabela()" />
+      <select id="limite" onchange="carregarDados()">
+        <option value="10">Últimas 10</option>
+        <option value="25" selected>Últimas 25</option>
+        <option value="50">Últimas 50</option>
+        <option value="100">Últimas 100</option>
+      </select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Data / Hora</th>
+            <th>Documento</th>
+            <th>Usuário</th>
+            <th>Páginas</th>
+            <th>Tamanho</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tabela-corpo">
+          <tr><td colspan="6" class="empty">Carregando registros...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let trabalhosCache = [];
+
+    function escaparHtml(texto) {
+      const div = document.createElement("div");
+      div.textContent = texto ?? "";
+      return div.innerHTML;
+    }
+
+    function formatarData(isoString) {
+      if (!isoString) return "—";
+      const data = new Date(isoString);
+      if (isNaN(data)) return escaparHtml(isoString);
+      return data.toLocaleString("pt-BR");
+    }
+
+    function formatarTamanho(kb) {
+      if (!kb) return "—";
+      if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
+      return `${kb} KB`;
+    }
+
+    function renderizarTabela() {
+      const termo = document.getElementById("filtro").value.trim().toLowerCase();
+      const tbody = document.getElementById("tabela-corpo");
+
+      const filtrados = trabalhosCache.filter((t) => {
+        const doc = (t.documento || "").toLowerCase();
+        const usr = (t.usuario || "").toLowerCase();
+        return doc.includes(termo) || usr.includes(termo);
+      });
+
+      const totalPaginas = filtrados.reduce((acc, t) => acc + (Number(t.paginas_impressas) || 0), 0);
+      document.getElementById("stat-total").textContent = filtrados.length;
+      document.getElementById("stat-paginas").textContent = totalPaginas;
+
+      if (filtrados.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">Nenhuma impressão encontrada.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtrados.map((t) => {
+        const concluido = t.status === "completed";
+        const badgeClass = concluido ? "badge-ok" : "badge-active";
+        const statusTexto = concluido ? "Concluído" : escaparHtml(t.status || "—");
+
+        return `
+          <tr>
+            <td>${formatarData(t.registrado_em)}</td>
+            <td class="doc-name" title="${escaparHtml(t.documento)}">${escaparHtml(t.documento || "Sem nome")}</td>
+            <td>${escaparHtml(t.usuario || "—")}</td>
+            <td>${Number(t.paginas_impressas) || 0}</td>
+            <td>${formatarTamanho(t.tamanho_kb)}</td>
+            <td><span class="badge ${badgeClass}">${statusTexto}</span></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function carregarDados() {
+      const limite = document.getElementById("limite").value;
+      const infoEl = document.getElementById("info-impressora");
+
+      try {
+        const [respHist, respFila] = await Promise.all([
+          fetch(`/historico-rede?limite=${limite}`),
+          fetch(`/fila-rede`)
+        ]);
+
+        const dadosHist = await respHist.json();
+        const dadosFila = await respFila.json();
+        const horaAtual = new Date().toLocaleTimeString("pt-BR");
+
+        if (dadosFila.online === false) {
+          infoEl.innerHTML = `
+            <span class="status-pill status-offline">Offline</span>
+            <span>${escaparHtml(dadosHist.impressora)} • ${escaparHtml(dadosFila.erro)} (${horaAtual})</span>
+          `;
+        } else {
+          infoEl.innerHTML = `
+            <span class="status-pill status-online">Online</span>
+            <span>${escaparHtml(dadosHist.impressora)} • Atualizado às ${horaAtual}</span>
+          `;
+        }
+
+        document.getElementById("stat-fila").textContent = dadosFila.quantidade_na_fila ?? 0;
+
+        trabalhosCache = dadosHist.trabalhos || [];
+        renderizarTabela();
+      } catch (err) {
+        infoEl.innerHTML = `<span class="status-pill status-offline">Erro</span><span>Falha ao conectar com a API local.</span>`;
+      }
+    }
+
+    carregarDados();
+    setInterval(() => {
+      if (document.getElementById("auto-refresh").checked) {
+        carregarDados();
+      }
+    }, 5000);
+  </script>
+</body>
+</html>

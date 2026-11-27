@@ -1,0 +1,6 @@
+{"id_trabalho": "883868", "documento": "teste_2_outra_maquina.pdf", "usuario": "aula", "status": "Completed", "paginas_impressas": 1, "tamanho_kb": 29473, "registrado_em": "2026-11-27T09:52:09"}
+{"id_trabalho": "887061", "documento": "teste_meu.pdf", "usuario": "aula", "status": "Completed", "paginas_impressas": 1, "tamanho_kb": 29475, "registrado_em": "2026-11-27T09:55:00"}
+{"id_trabalho": "889133", "documento": "teste.pdf", "usuario": "aula", "status": "Completed", "paginas_impressas": 1, "tamanho_kb": 29469, "registrado_em": "2026-11-27T10:01:38"}
+{"id_trabalho": "3", "documento": "2026 - Prática - Gastrotricha, Rotifera e Acantocephala", "usuario": "BIO\\aula", "status": "completed", "paginas_impressas": 1, "tamanho_kb": 0, "registrado_em": "2026-11-27T10:20:16"}
+{"id_trabalho": "2", "documento": "teste_maquina_3.pdf", "usuario": "BIO\\aula", "status": "completed", "paginas_impressas": 1, "tamanho_kb": 0, "registrado_em": "2026-11-27T10:20:16"}
+{"id_trabalho": "1", "documento": "Página de teste", "usuario": "BIO\\aula", "status": "completed", "paginas_impressas": 1, "tamanho_kb": 0, "registrado_em": "2026-11-27T10:20:16"}
