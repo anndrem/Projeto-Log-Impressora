@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import struct
+import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -15,6 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 try:
     from dotenv import load_dotenv
+
     env_path = BASE_DIR / ".env"
     load_dotenv(env_path if env_path.exists() else None)
 except ImportError:
@@ -25,12 +27,24 @@ def env_bool(nome: str, padrao: bool = False) -> bool:
     return os.getenv(nome, str(padrao)).strip().lower() in ("1", "true", "sim", "yes")
 
 
+def para_int(valor, padrao: int = 0) -> int:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
 IMPRESSORA_IP = os.getenv("IMPRESSORA_IP", "").strip()
 if not IMPRESSORA_IP:
-    raise RuntimeError("Variável IMPRESSORA_IP não configurada. Crie o arquivo src/.env a partir do .env.example.")
+    raise RuntimeError(
+        "Variável IMPRESSORA_IP não configurada. Crie o arquivo src/.env a partir do .env.example."
+    )
 
-IMPRESSORA_PORTA = int(os.getenv("IMPRESSORA_PORTA", "631"))
-IMPRESSORA_CAMINHO = os.getenv("IMPRESSORA_CAMINHO", "/ipp/print").strip()
+IMPRESSORA_PORTA = para_int(os.getenv("IMPRESSORA_PORTA", "631"), 631)
+IMPRESSORA_CAMINHO = os.getenv("IMPRESSORA_CAMINHO", "/ipp/print").strip() or "/ipp/print"
+if not IMPRESSORA_CAMINHO.startswith("/"):
+    IMPRESSORA_CAMINHO = f"/{IMPRESSORA_CAMINHO}"
+
 IMPRESSORA_USAR_HTTPS = env_bool("IMPRESSORA_USAR_HTTPS", False)
 IPP_VERIFICAR_SSL = env_bool("IPP_VERIFICAR_SSL", True)
 
@@ -40,7 +54,7 @@ DEBUG_MODE = env_bool("DEBUG_MODE", False)
 ARQUIVO_LOG = (BASE_DIR / os.getenv("ARQUIVO_LOG", "logs/impressoes.txt")).resolve()
 ARQUIVO_LOG.parent.mkdir(parents=True, exist_ok=True)
 
-MAX_REGISTROS = int(os.getenv("MAX_REGISTROS", "100"))
+MAX_REGISTROS = max(1, para_int(os.getenv("MAX_REGISTROS", "100"), 100))
 INTERVALO_SEGUNDOS = float(os.getenv("INTERVALO_SEGUNDOS", "2"))
 
 ESQUEMA_HTTP = "https" if IMPRESSORA_USAR_HTTPS else "http"
@@ -56,8 +70,7 @@ JOB_STATES = {
     7: "canceled",
     8: "aborted",
     9: "completed",
-},
-
+}
 
 historico: deque[dict] = deque(maxlen=MAX_REGISTROS)
 
@@ -173,8 +186,8 @@ def normalizar_job(raw: dict) -> dict:
         "documento": str(raw.get("job-name", "")),
         "usuario": str(raw.get("job-originating-user-name", "")),
         "status": JOB_STATES.get(state_code, str(state_code or "")),
-        "paginas_impressas": int(paginas),
-        "tamanho_kb": int(tamanho_kb),
+        "paginas_impressas": para_int(paginas),
+        "tamanho_kb": para_int(tamanho_kb),
     }
 
 
@@ -193,11 +206,19 @@ def carregar_arquivo():
     with ARQUIVO_LOG.open("r", encoding="utf-8") as f:
         for linha in f:
             linha = linha.strip()
-            if linha:
-                try:
-                    historico.append(json.loads(linha))
-                except json.JSONDecodeError:
-                    continue
+            if not linha:
+                continue
+            try:
+                dado = json.loads(linha)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(dado, dict):
+                historico.append(dado)
+            elif isinstance(dado, list):
+                for item in dado:
+                    if isinstance(item, dict):
+                        historico.append(item)
 
 
 def salvar_arquivo():
@@ -205,13 +226,16 @@ def salvar_arquivo():
     ARQUIVO_LOG.write_text(conteudo + ("\n" if conteudo else ""), encoding="utf-8")
 
 
-async def consultar_ipp(client: httpx.AsyncClient, which_jobs: str = "completed") -> tuple[int, list[dict]]:
+async def consultar_ipp(
+    client: httpx.AsyncClient, which_jobs: str = "completed"
+) -> tuple[int, list[dict]]:
     payload = montar_ipp_get_jobs(which_jobs)
     response = await client.post(
         IPP_HTTP_URL,
         content=payload,
         headers={"Content-Type": "application/ipp"},
     )
+    response.raise_for_status()
     status_code, raw_jobs = parse_ipp_jobs(response.content)
     return status_code, [normalizar_job(j) for j in raw_jobs]
 
@@ -227,7 +251,11 @@ async def coletor_impressoes():
                     print("[OK] Conexão com a impressora restabelecida.")
                 impressora_online = True
 
-                recentes = {assinatura_job(item) for item in list(historico)[-20:]}
+                recentes = {
+                    assinatura_job(item)
+                    for item in list(historico)[-20:]
+                    if isinstance(item, dict)
+                }
                 mudou = False
 
                 for job in jobs:
@@ -243,10 +271,16 @@ async def coletor_impressoes():
                     salvar_arquivo()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except httpx.HTTPError as e:
                 if impressora_online is not False:
-                    print(f"[AVISO] Impressora sem resposta ({type(e).__name__}). Tentando novamente em segundo plano...")
+                    print(
+                        f"[AVISO] Impressora sem resposta ({type(e).__name__}: {e}). "
+                        "Tentando novamente em segundo plano..."
+                    )
                 impressora_online = False
+            except Exception as e:
+                print(f"[ERRO INTERNO] {type(e).__name__}: {e}")
+                traceback.print_exc()
 
             await asyncio.sleep(INTERVALO_SEGUNDOS)
 
@@ -293,7 +327,7 @@ async def obter_fila_ativa():
             "quantidade_na_fila": len(trabalhos),
             "trabalhos": trabalhos,
         }
-    except Exception as e:
+    except httpx.HTTPError as e:
         return {
             "online": False,
             "impressora": IDENTIFICADOR_PUBLICO,
@@ -301,15 +335,30 @@ async def obter_fila_ativa():
             "quantidade_na_fila": 0,
             "trabalhos": [],
         }
+    except Exception as e:
+        print(f"[ERRO INTERNO /fila-rede] {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return {
+            "online": False,
+            "impressora": IDENTIFICADOR_PUBLICO,
+            "erro": f"Erro interno na API ({type(e).__name__})",
+            "quantidade_na_fila": 0,
+            "trabalhos": [],
+        }
 
 
 if DEBUG_MODE:
+
     @app.get("/debug-ipp")
     async def debug_ipp():
         try:
             async with httpx.AsyncClient(timeout=5.0, verify=IPP_VERIFICAR_SSL) as client:
                 payload = montar_ipp_get_jobs("completed")
-                r = await client.post(IPP_HTTP_URL, content=payload, headers={"Content-Type": "application/ipp"})
+                r = await client.post(
+                    IPP_HTTP_URL,
+                    content=payload,
+                    headers={"Content-Type": "application/ipp"},
+                )
                 status_ipp, raw_jobs = parse_ipp_jobs(r.content)
             return {
                 "online": True,
@@ -318,8 +367,14 @@ if DEBUG_MODE:
                 "quantidade": len(raw_jobs),
                 "amostra_bruta": raw_jobs[:5],
             }
-        except Exception as e:
+        except httpx.HTTPError as e:
             return {
                 "online": False,
                 "erro": f"Falha ao conectar na impressora ({type(e).__name__})",
+            }
+        except Exception as e:
+            traceback.print_exc()
+            return {
+                "online": False,
+                "erro": f"Erro interno ({type(e).__name__}: {e})",
             }
